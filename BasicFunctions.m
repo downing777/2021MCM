@@ -1,0 +1,588 @@
+function BasicFunctions
+%===================================
+%   data1 column 4-6 are intersect oordinates
+%   data1 column 7 is distance
+%   data1 column 8 is bool, in = 1, out = 0
+%   data1 column 9 is bool, positive = 1, negative = 0;
+%
+%   surface 4-6 is Centre of Mass coordinate
+%   surface 7-9 is normal vector (normalized)
+%   surface 10-12 is refraction vector
+%===================================
+
+    function MonteCarloSimulation(times)
+        range = 25:.5:34;
+        clf
+        axis([range(1) range(end) 0 1])
+        FrequencyArray = zeros(1,length(range));
+        ProbabilityArray = zeros(1,length(range));
+        SumProbabilityArray = zeros(1,length(range));
+        plotFlag = false;
+        for i = 1:times
+            
+            if mod(i,10) == 0
+                i
+            end
+            
+            checkPoint(false);
+            transformData;
+            processPointString;
+            revTransformData;
+            randomizeCords;
+
+            calcComNorm;
+            generateRay;
+            plotFeed;
+            rate = calcRecvRate;
+            FrequencyArray(ceil(2*(rate-range(1)))) = FrequencyArray(ceil(2*(rate-range(1)))) + 1;
+            ProbabilityArray = FrequencyArray/i;
+            for j = 1:length(range)
+                SumProbabilityArray(j) = sum(ProbabilityArray(1:j));
+            end
+            clf
+            bar(range,ProbabilityArray,'FaceColor',[0 .5 .5],'EdgeColor',[0 .9 .9],'LineWidth',.5)
+            hold on
+            grid on
+            grid minor
+            xlabel('Reflective Rate')
+            ylabel('Probability')
+            
+            plot(range,SumProbabilityArray,'o-','Color',[252 157 154]/255,'LineWidth',.8)
+            plot(range,ProbabilityArray,'o-','Color',[131 175 155]/255,'LineWidth',.8)
+            
+%             simpleProbabilityArray = ProbabilityArray;
+%             simpleRange = range;
+%             for j = length(simpleProbabilityArray):-1:2
+%                if  simpleProbabilityArray(j) == 0 && simpleProbabilityArray(j-1) == 0
+%                    simpleProbabilityArray(j) = [];
+%                    simpleRange(j) = [];
+%                end
+%             end
+%             for j = 1:length(simpleProbabilityArray)-1
+%                if  simpleProbabilityArray(j) == 0 && simpleProbabilityArray(j+1) == 0
+%                    simpleProbabilityArray(j) = [];
+%                    simpleRange(j) = [];
+%                end
+%             end
+            
+            p = polyfit(range,ProbabilityArray,5);
+            
+            x1 = linspace(range(1),range(end));
+            y1 = polyval(p,x1);
+            plot(x1,y1,'Color',[255 66 93] / 255,'LineWidth',1.1);
+            
+            pause(.01)
+        end
+    end
+    
+    function randomizeCords
+        for i = 1:size(data1,1)
+            if data1(i,8) == 1
+                azimuth_ = rand*2*pi;
+                elevation_ = (rand-0.5)*2*pi;
+                vector = [cos(azimuth_),sin(azimuth_),tan(elevation_)];
+                randomV = vector/norm(vector)*randomWalkLimit*rand*norm(data1(1,4:6)-data1(2,4:6));
+                data1(i,4:6) = data1(i,4:6) + randomV;
+            end
+        end
+    end
+
+    function ReflecRateTraverse(interval_)
+        plotFlag = false;
+        rateArray = [];
+        traverseArray = -0.14:interval_:0;
+        for deltaH = traverseArray
+            fprintf('Current deltaH = %.3f\n',deltaH);
+            f_param = h_param-300*(1-0.466)+deltaH;
+            checkPoint(false);
+            transformData;        
+            processPointString;
+            revTransformData;
+            plot300perimeter;
+
+            plotMesh;
+            calcComNorm;
+            generateRay;
+            plotFeed;
+            rate = calcRecvRate;
+            rateArray = [rateArray,rate];
+        end
+        clf
+        plot(traverseArray,rateArray);
+        xlabel('Correction on Z-axis');
+        ylabel('Reflective Rate');
+        axis auto
+    end
+
+    function rate = calcRecvRate
+        t=tic;
+        v = [cos(azimuth) sin(azimuth) tan(elevation)];
+        feedCentre = - v/norm(v) * 160.2;
+        options = optimoptions('fsolve','Display','none','Algorithm','levenberg-marquardt');
+        rayInCount = 0;
+        rayOutCount = 0;
+        
+        for i = 1:size(surface,1)
+            if surface(i,10) ~= 0
+                S = fsolve(@equations,[0,0,0],options);
+                % plot3(S(1),S(2),S(3),'o--r');
+                dist2centre = norm(S-feedCentre);
+                if dist2centre <= .5
+                    rayInCount = rayInCount + 1;
+                else
+                    rayOutCount = rayOutCount + 1;
+                end
+            end
+        end
+        toc(t)
+        rate = rayInCount/rayOutCount*100;
+        fprintf('Ray in count = %d, Ray out count = %d.\n',rayInCount,rayOutCount);
+        fprintf('Reflective Rate = %.2f %%\n',rate);
+        function e = equations(x)
+            e(1) = dot(v,[x(1),x(2),x(3)]-feedCentre);
+            e(2) = (x(1)-surface(i,4))*surface(i,11)-(x(2)-surface(i,5))*surface(i,10);
+            e(3) = (x(1)-surface(i,4))*surface(i,12)-(x(3)-surface(i,6))*surface(i,10);
+        end
+    end
+
+    function calcComNorm
+        t=tic;
+        for i = 1:size(surface,1)
+            if sum(ismember(surface(i,1:3),inPtArray)) == 3
+                cord1 = data1(surface(i,1),4:6);
+                cord2 = data1(surface(i,2),4:6);
+                cord3 = data1(surface(i,3),4:6);
+                com = (cord1+cord2+cord3)/3;
+                surface(i,4:6) = com;
+                % calculate normal vector
+                vector1 = cord1 - cord2;
+                vector2 = cord2 - cord3;
+                vecZ = 1;
+                options = optimoptions('fsolve','Display','none','Algorithm','levenberg-marquardt');
+                S = fsolve(@equations,[0,0,0],options);
+                vecX = S(1);
+                vecY = S(2);
+                normalizedV = [vecX vecY vecZ]/norm([vecX vecY vecZ]);
+                surface(i,7:9) = normalizedV;
+            end
+        end
+        toc(t)
+        function e = equations(x)
+            e(1) = dot([x(1),x(2),vecZ],vector1);
+            e(2) = dot([x(1),x(2),vecZ],vector2);
+        end
+    end
+
+    function generateRay
+        incidenceV  = [cos(azimuth) sin(azimuth) tan(elevation)] / norm([cos(azimuth) sin(azimuth) tan(elevation)]);
+        for i = 1:5:size(surface,1)
+           if sum(ismember(surface(i,1:3),inPtArray)) == 3
+               refractionV = incidenceV - 2 * dot(incidenceV,surface(i,7:9))*surface(i,7:9);
+               refractionV = - refractionV / norm(refractionV);
+               surface(i,10:12) = refractionV;
+               % plot incidence ray
+               if plotFlag && 1
+                   plot3([surface(i,4),surface(i,4)+rayLength(2)*incidenceV(1)],...
+                       [surface(i,5),surface(i,5)+rayLength(2)*incidenceV(2)],...
+                       [surface(i,6),surface(i,6)+rayLength(2)*incidenceV(3)],':b');
+               end
+               % plot refraction ray
+               if plotFlag
+                   plot3([surface(i,4),surface(i,4)+rayLength(1)*refractionV(1)],...
+                       [surface(i,5),surface(i,5)+rayLength(1)*refractionV(2)],...
+                       [surface(i,6),surface(i,6)+rayLength(1)*refractionV(3)],'--m');
+               end
+           end
+        end
+    end
+
+    function plotFeed
+        if plotFlag 
+            r = 2.5;
+            valueX = @(z) z*cos(azimuth)/tan(elevation);
+            valueY = @(z) z*sin(azimuth)/tan(elevation);
+            valueZ = -157.5;
+            X1 = [valueX(valueZ) valueY(valueZ) valueZ];
+            valueZ = -162.5;
+            X2 = [valueX(valueZ) valueY(valueZ) valueZ];
+            length_cyl=norm(X2-X1);
+            [x,y,z]=cylinder(r,100);
+            z=z*length_cyl;
+            %绘制两个底面
+            hold on;
+            cylinderHdl=mesh(x,y,z);
+            %计算圆柱体旋转的角度
+            unit_V=[0 0 1];
+            angle_X1X2=acos(dot( unit_V,(X2-X1) )/( norm(unit_V)*norm(X2-X1)) )*180/pi;
+            %计算旋转轴
+            axis_rot=cross(unit_V,(X2-X1));
+            %将圆柱体旋转到期望方向
+            if angle_X1X2~=0 % Rotation is not needed if required direction is along X
+                rotate(cylinderHdl,axis_rot,angle_X1X2,[0 0 0])
+            end
+            %将圆柱体和平面挪到期望的位置
+            set(cylinderHdl,'XData',get(cylinderHdl,'XData')+X1(1))
+            set(cylinderHdl,'YData',get(cylinderHdl,'YData')+X1(2))
+            set(cylinderHdl,'ZData',get(cylinderHdl,'ZData')+X1(3))
+            % 设置圆柱体的颜色
+            set(cylinderHdl,'FaceColor','k')
+            set(cylinderHdl,'EdgeAlpha',0)
+            alpha(cylinderHdl,1);
+        end
+    end
+
+    function plotMesh
+        %plot3(0,0,-200);
+        hold on
+        shading interp
+        axis equal
+        grid on
+        if plotFlag
+            for i = 1:size(surface,1)
+                if abs(data1(surface(i,1),6)*data1(surface(i,2),6)*data1(surface(i,3),6)) ~= 0
+                    plot3([data1(surface(i,1),4),data1(surface(i,2),4)],...
+                        [data1(surface(i,1),5),data1(surface(i,2),5)],[data1(surface(i,1),6),data1(surface(i,2),6)],'b');
+                    plot3([data1(surface(i,2),4),data1(surface(i,3),4)],...
+                        [data1(surface(i,2),5),data1(surface(i,3),5)],[data1(surface(i,2),6),data1(surface(i,3),6)],'b');
+                    plot3([data1(surface(i,1),4),data1(surface(i,3),4)],...
+                        [data1(surface(i,1),5),data1(surface(i,3),5)],[data1(surface(i,1),6),data1(surface(i,3),6)],'b');
+                end
+            end
+            for i = 1:size(data1,1)
+                if data1(i,8) == 1
+                    plot3(data1(i,4),data1(i,5),data1(i,6),'o','Color','b','MarkerSize',9,'MarkerFaceColor','#D9FFFF');
+                else
+                    %plot3(data1(i,1),data1(i,2),data1(i,3),'o','Color','m');
+                end
+            end
+        end
+    end
+
+    function translation
+        for i = 1:size(data1,1)
+            nodeName = name{i+1,1};
+            for j = 2:length(surface)
+                for k =1:3
+                    if isequal(surface{j,k},nodeName)
+                        translatedConnection(j-1,k) = i;
+                    end
+                end
+            end
+            i
+        end
+        xlswrite('4.xlsx',translatedConnection);
+    end
+
+    function write2excel
+            results = cell(length(inPtArray)+1,8);
+            for j = 2:length(inPtArray)+1
+                results{j,1} = name{inPtArray(j-1)+1,1};
+                if data1(inPtArray(j-1),9) == 1
+                    results{j,2} = ['+' num2str(round(data1(inPtArray(j-1),7),4))];
+                else
+                    results{j,2} = ['-' num2str(round(data1(inPtArray(j-1),7),4))];
+                end
+                results{j,3} = round(data1(inPtArray(j-1),4),4);
+                results{j,4} = round(data1(inPtArray(j-1),5),4);
+                results{j,5} = round(data1(inPtArray(j-1),6),4);
+            end
+            results{1,1} = '对应主索节点编号';
+            results{1,2} = '伸缩量（米）';
+            results{1,3} = '调整后的X坐标（米）';
+            results{1,4} = '调整后的Y坐标（米）';
+            results{1,5} = '调整后的Z坐标（米）';
+            results{1,6} = '顶点坐标X（米）';
+            results{2,6} = round(peakCords(1),4);
+            results{1,7} = '顶点坐标Y（米）';
+            results{2,7} = round(peakCords(2),4);
+            results{1,8} = '顶点坐标Z（米）';
+            results{2,8} = round(peakCords(3),4);
+
+            xlswrite('results.xlsx',results);
+        end
+
+    function checkPoint(tfFlag)
+       for i=1:interval:size(data1,1)
+            m = [data1(i,1),data1(i,2),data1(i,3)];
+            if ptInOrOut(m,tfFlag)
+                numPtIn = numPtIn + 1;
+                data1(i,8) = 1;
+                inPtArray = [inPtArray,i];
+            else
+                data1(i,8) = 0;
+            end
+       end
+    end
+
+    function transformData
+        for k=1:size(data1,1)
+            [xp,yp,zp] = transform(data1(k,1),data1(k,2),data1(k,3));
+            data1(k,1:3) = [xp,yp,zp];
+        end
+        for k=1:size(data2,1)
+            [xp,yp,zp] = transform(data2(k,1),data2(k,2),data2(k,3));
+            data2(k,1:3) = [xp,yp,zp];
+        end
+       for k=1:size(data2,1)
+            [xp,yp,zp] = transform(data2(k,4),data2(k,5),data2(k,6));
+            data2(k,4:6) = [xp,yp,zp];
+       end
+    end
+
+    function revTransformData
+        for k=1:size(data1,1)
+            [xp,yp,zp] = revTransform(data1(k,1),data1(k,2),data1(k,3));
+            data1(k,1:3) = [xp,yp,zp];
+        end
+        for k=1:size(data1,1)
+            [xp,yp,zp] = revTransform(data1(k,4),data1(k,5),data1(k,6));
+            data1(k,4:6) = [xp,yp,zp];
+        end
+        for k=1:size(data2,1)
+            [xp,yp,zp] = revTransform(data2(k,1),data2(k,2),data2(k,3));
+            data2(k,1:3) = [xp,yp,zp];
+        end
+           for k=1:size(data2,1)
+                [xp,yp,zp] = revTransform(data2(k,4),data2(k,5),data2(k,6));
+                data2(k,4:6) = [xp,yp,zp];
+           end
+    end
+
+    function [x_,y_,z_] = transform(x,y,z)
+       out = Transformer * [x,y,z]';
+       x_ = out(1);y_ = out(2); z_ = out(3);
+    end
+
+    function [x_,y_,z_] = revTransform(x,y,z)
+       out = inv(Transformer) * [x,y,z]';
+       x_ = out(1);y_ = out(2); z_ = out(3);
+    end
+
+    function verify
+        fprintf('Verify: [368]%.2f->[369]%.2f->[370]%.2f.\n',data1(368,7),data1(369,7),data1(370,7));
+        fprintf('Verify: [611]%.2f->[612]%.2f->[613]%.2f.\n',data1(611,7),data1(612,7),data1(613,7));
+    end
+
+    function MSDtraverse(interval_)
+        plotFlag = false;
+        lossArray = [];
+        distArray = [];
+        clf
+        for deltaV = -.6:interval_:.6
+            fprintf('Current delta = %.2f\n',deltaV);
+            delta = deltaV;
+            h_param = 300.4 + delta;
+            f_param = h_param-300*(1-0.466);
+            
+            processPointString;
+            
+            maxDist = 0;
+            index   = [];
+            for k=1:interval:size(data1,1)
+                if data1(k,8) == 1
+                    if abs(data1(k,7)) > maxDist && k ~= 369 && k ~= 612 && k ~= 752 && k ~= 821
+                        maxDist = data1(k,7);
+                        index = k;
+                    end
+                end
+            end
+            fprintf('Max Correction = %.2f.\n',maxDist);
+            %fprintf('Max Correction Index = %d.\n',index);
+            loss = MSDloss;
+            lossArray = [lossArray,loss];
+            distArray = [distArray,maxDist];
+        end
+        [AX,~,~] = plotyy(-.6:interval_:.6,lossArray,-.6:interval_:.6,distArray);
+        title('Correction offset on Z-axis') 
+        set(get(AX(1),'Ylabel'),'String','Mean Squre Deviation') 
+        set(get(AX(2),'Ylabel'),'String','Max Correction (m)') 
+        grid on
+    end
+
+    function loss = MSDloss
+        loss = 0;
+        delta_c = [];
+        for i=1:interval:size(data1,1)
+        % 这里有问题的两条数据用近邻代替
+            if i == 369 || i == 612 || i == 752 || i == 821
+                dist = data1(i+1,7);
+                else
+                dist = data1(i,7);
+            end
+            delta_c = [delta_c,dist];
+        end
+        loss = sqrt((delta_c*delta_c')/numPtIn);
+        %fprintf('Mean Square Deviation = %.2f.\n',loss);
+    end
+
+    function calcIntersectDist(index)
+        % solve for the foot of the perpendicular point
+        function e = equations(x)
+            e(1) = (x(1)-data2(index,1))*(data2(index,2)-data2(index,5)) - (data2(index,1)-data2(index,4))*(x(2)-data2(index,2));
+            e(2) = (x(2)-data2(index,2))*(data2(index,3)-data2(index,6)) - (data2(index,2)-data2(index,5))*(x(3)-data2(index,3));
+            e(3) = x(1)^2+x(2)^2-4*f_param*(x(3)+h_param);
+        end
+        options = optimoptions('fsolve','Display','none');
+        intersect = fsolve(@equations,data1(index,1:3),options);
+        data1(index,4:6) = intersect;
+        data1(index,7) = norm(data1(index,1:3)-intersect);
+        if norm(data1(index,1:3)) > norm(data1(index,4:6))
+            data1(index,9) = 1; % positive correction
+        else
+            data1(index,9) = 0; % negative correction
+        end
+        if plotFlag
+            plot3(intersect(1),intersect(2),intersect(3),'*k');
+            plot3([data1(index,1),data1(index,4)],[data1(index,2),data1(index,5)],[data1(index,3),data1(index,6)],'b');
+        end
+    end 
+ 
+    function processPointString
+        t = tic;
+        %plot3(0,0,-200);
+        hold on
+        shading interp
+        axis equal
+        grid on
+        for i=1:interval:size(data1,1)%*~testMode+100*testMode
+            m = [data1(i,1),data1(i,2),data1(i,3)];
+            if data1(i,8) == 1
+                if plotFlag
+                    % point
+                    plot3(data1(i,1),data1(i,2),data1(i,3),'o--r');
+                    % string
+                    plot3([data2(i,1),data2(i,4)+(data2(i,4)-data2(i,1))*0],[data2(i,2),data2(i,5)+(data2(i,5)-data2(i,2))*0],[data2(i,3),data2(i,6)+(data2(i,6)-data2(i,3))*0],'--b');
+                end
+                % intersection point
+                calcIntersectDist(i);
+            else
+                if elseFlag
+                    if plotFlag
+                        % point
+                        plot3(data1(i,1),data1(i,2),data1(i,3),'o--b');
+                        % string
+                        plot3([data2(i,1),data2(i,4)+(data2(i,4)-data2(i,1))*0],[data2(i,2),data2(i,5)+(data2(i,5)-data2(i,2))*0],[data2(i,3),data2(i,6)+(data2(i,6)-data2(i,3))*0],'--b');
+                    end
+                    % intersection point
+                    calcIntersectDist(i);
+                end
+            end
+            %drawnow
+            %pause(.01)
+        end
+        toc(t)
+    end
+
+    function plotPointString(data1_,data2_)
+        t = tic;
+        optionFlag = true;
+        for i=1:interval:size(data1_,1)
+            m = [data1_(i,1),data1_(i,2),data1_(i,3)];
+            if data1_(i,8) == 1
+                if plotFlag
+                    % point
+                    plot3(data1_(i,1),data1_(i,2),data1_(i,3),'o--r');
+                    % string
+                    if i == 0
+                        plot3([data2_(i,1),data2_(i,4)+(data2_(i,4)-data2_(i,1))*100],[data2_(i,2),data2_(i,5)+(data2_(i,5)-data2_(i,2))*100],[data2_(i,3),data2_(i,6)+(data2_(i,6)-data2_(i,3))*100],'--b');
+                    else
+                        plot3([data2_(i,1),data2_(i,4)+(data2_(i,4)-data2_(i,1))*0],[data2_(i,2),data2_(i,5)+(data2_(i,5)-data2_(i,2))*0],[data2_(i,3),data2_(i,6)+(data2_(i,6)-data2_(i,3))*0],'--b');
+                    end
+                    % intersection point
+                    plot3(data1_(i,4),data1_(i,5),data1_(i,6),'*k');
+                    plot3([data1_(i,1),data1_(i,4)],[data1_(i,2),data1_(i,5)],[data1_(i,3),data1_(i,6)],'m');
+                end
+            else
+                % point
+                if elseFlag
+                    if plotFlag
+                        plot3(data1_(i,1),data1_(i,2),data1_(i,3),'o--b');
+                        % string
+                        plot3([data2_(i,1),data2_(i,4)+(data2_(i,4)-data2_(i,1))*0],[data2_(i,2),data2_(i,5)+(data2_(i,5)-data2_(i,2))*0],[data2_(i,3),data2_(i,6)+(data2_(i,6)-data2_(i,3))*0],'--b');
+                        % intersection point
+                        plot3(data1_(i,4),data1_(i,5),data1_(i,6),'*k');
+                        plot3([data1_(i,1),data1_(i,4)],[data1_(i,2),data1_(i,5)],[data1_(i,3),data1_(i,6)],'m');
+                    end
+                end
+            end
+            if optionFlag
+                if plotFlag
+                    hold on
+                    shading interp
+                    axis equal
+                    grid on
+                end
+                optionFlag = false;
+            end
+        end
+        toc(t)
+    end
+    
+    function plotParaboloid
+        if plotFlag
+            arrayX  = -300:1:300;
+            arrayY  = -300:1:300;
+            [x,y]   = meshgrid(arrayX,arrayY);
+            z = paraboloid_Z(x,y);
+            meshHdl = mesh(x,y,z);
+            alpha(meshHdl,.2);
+        end
+    end
+    
+    function output=rid369(input)
+        output=input;
+        output(369,:)=output(370,:);
+    end
+    
+    function plot300perimeter
+        % https://blog.csdn.net/weixin_44986426/article/details/114868368
+        if plotFlag
+            r = 150;
+            valueX = @(z) z*cos(azimuth)/tan(elevation);
+            valueY = @(z) z*sin(azimuth)/tan(elevation);
+            valueZ = -180;
+            X1 = [valueX(valueZ) valueY(valueZ) valueZ];
+            valueZ = -300;
+            X2 = [valueX(valueZ) valueY(valueZ) valueZ];
+            length_cyl=norm(X2-X1);
+            [x,y,z]=cylinder(r,100);
+            z=z*length_cyl;
+            %绘制两个底面
+            hold on;
+            cylinderHdl=mesh(x,y,z);
+            %计算圆柱体旋转的角度
+            unit_V=[0 0 1];
+            angle_X1X2=acos(dot( unit_V,(X2-X1) )/( norm(unit_V)*norm(X2-X1)) )*180/pi;
+            %计算旋转轴
+            axis_rot=cross(unit_V,(X2-X1));
+            %将圆柱体旋转到期望方向
+            if angle_X1X2~=0 % Rotation is not needed if required direction is along X
+                rotate(cylinderHdl,axis_rot,angle_X1X2,[0 0 0])
+            end
+            %将圆柱体和平面挪到期望的位置
+            set(cylinderHdl,'XData',get(cylinderHdl,'XData')+X1(1))
+            set(cylinderHdl,'YData',get(cylinderHdl,'YData')+X1(2))
+            set(cylinderHdl,'ZData',get(cylinderHdl,'ZData')+X1(3))
+            % 设置圆柱体的颜色
+            set(cylinderHdl,'FaceColor','k')
+            set(cylinderHdl,'EdgeAlpha',0)
+            alpha(cylinderHdl,0.3);
+        end
+    end
+
+    function res = ptInOrOut(pt,tfFlag)
+        if tfFlag
+            v = [0 0 1];
+        else
+            v = [cos(azimuth) sin(azimuth) tan(elevation)];
+        end
+        if norm(cross(pt,v))/norm(v)>150
+            res = false;
+        else
+            res = true;
+        end
+    end
+    
+
+
+end
